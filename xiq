@@ -1,0 +1,305 @@
+#!/usr/bin/env perl
+
+use warnings;
+use Curses;
+use Curses::UI;
+use Getopt::Long;
+use Data::Dumper;
+use IPC::Open3;
+use threads;
+use Thread::Queue;
+use POSIX;
+use Fcntl;
+
+$query_prompt = "> ";
+$initial_query = '';
+$size_limit = 1024*1024;
+$type_timeout = 1500;
+$fire_key_spec = 'F5';
+$no_clear_on_exit = 0;
+$no_border = 0;
+@command_template = ['grep', '-i', '$QUERY'];
+$no_separator_line = 0;
+$no_hscroll = 0;
+$no_vscroll = 0;
+$always_hscroll = 0;
+$always_vscroll = 0;
+$wrapping = 0;
+
+
+if(!GetOptions(
+	'p|prompt=s' => \$query_prompt,
+	'i|initial-query=s' => \$initial_query,
+	'S|size-limit=i' => \$size_limit,
+	't|timeout=i' => \$type_timeout,
+	'k|key=s' => \$fire_key_spec,
+	'X|no-clear' => \$no_clear_on_exit,
+	'B|no-border' => \$no_border,
+	'no-separator' => \$no_separator_line,
+	'no-scroll' => sub{ $no_hscroll = $no_vscroll = 1; },
+	'no-hscroll' => \$no_hscroll,
+	'no-vscroll' => \$no_vscroll,
+	'always-scroll' => sub{ $always_hscroll = $always_vscroll = 1; },
+	'always-hscroll' => \$always_hscroll,
+	'always-vscroll' => \$always_vscroll,
+	'w|wrap' => \$wrapping,
+))
+{
+print "Usage: [command-1] | $0 [options] -- [command-2] [args]
+Options:
+  -p, --prompt STR         prompt in front of query field
+  -i, --initial-query STR  initial query string
+  -S, --size-limit BYTES   below this size input kept in memory
+  -t, --timeout MSEC       wait this much milli-seconds before fire query, -1 to disable
+  -k, --key KEY            fire query on keypress, possible KEY names e.g.
+                           'M-f', 'C-f', 'KEY_ENTER', 'F5'
+                           https://metacpan.org/pod/release/GIRAFFED/Curses-1.30a/Curses.pm#Available-Constants
+  -b, --bottom             show query box on the bottom (default is top)
+  -T, --tail               show the tail of result (default is head)
+  -B, --no-border          don't show border
+  --no-separator           don't show separator line  # TODO
+  --no-scroll              don't show scrollbars
+  --no-[hv]scroll          don't show horizontal/vertical scrollbar
+  --always-scroll          always show scrollbars
+  --always-[hv]scroll      always show horizontal/vertical scrollbar
+  --wrap                   default wrap result text (toggle with Ctrl-W)
+  -X                       don't clear screen on exit
+  
+  command-2                command to filter input
+  args                     arguments for command-2, '\$QUERY' replaced with the current query
+";
+exit 1;
+}
+
+@command_template = @ARGV;
+
+
+if($fire_key_spec =~ /^M-(.)$/) { $fire_key = '\e'.$1; }
+elsif($fire_key_spec =~ /^C-(.)$/) { $fire_key = '\c'.$1; }
+elsif($fire_key_spec =~ /^KEY_[[:alnum:]]+$/) { $fire_key = eval $fire_key_spec; }
+elsif($fire_key_spec =~ /^F(\d+)$/) { $fire_key = KEY_F($1); }
+else { die "Invalid KEY name: $fire_key_spec\n"; }
+
+
+open my $Input, '<x';  # TODO
+my $LastCommandStatus;
+my $Thread;
+my $CommandPid;
+my $MainQueue = new Thread::Queue;
+my $border_color;
+my $ExitRequested = 0;
+my $FireRequested = 0;
+
+
+
+my $CUI = new Curses::UI(
+	-color_support => 1,
+	-clear_on_exit => !$no_clear_on_exit,
+);
+my $win_query = $CUI->add(
+	'win_query', 'Window',
+	-border => 0,
+	-y => 0,
+	-height => 1,
+);
+my $lab_prompt = $win_query->add(
+	'lab_prompt', 'Label',
+	-text => $query_prompt,
+	-bold => 1,
+	-border => 0,
+	-width => length $query_prompt,
+);
+my $edt_query = $win_query->add(
+	'edt_query', 'TextEditor',
+	-text => $initial_query,
+	-pos => length $initial_query,
+	-x => length $query_prompt,
+);
+my $win_result = $CUI->add(
+	'win_result', 'Window',
+	-border => !$no_border,
+	-y => 1,
+);
+my $edt_result = $win_result->add(
+	'edt_result', 'TextEditor',
+	-readonly => 1,
+	-showoverflow => 0,
+	-wrapping => $wrapping,
+	-vscrollbar => $no_vscroll ? 0 : 'right',
+	-hscrollbar => $no_hscroll ? 0 : 'bottom',
+);
+
+sub switch_focus
+{
+	my $widget = shift;
+	my $key = shift;
+	$widget->focus_next();
+}
+
+sub sethashkey
+{
+	$_[0]->{$_[1]} = $_[2];
+}
+sub appendhashkey
+{
+	$_[0]->{$_[1]} .= $_[2];
+}
+
+sub set_nonblock
+{
+	my $fh = shift;
+	my $flags = fcntl($fh, F_GETFL, 0);
+	$flags |= O_NONBLOCK;
+	fcntl($fh, F_SETFL, $flags);
+}
+
+sub wait_for_input
+{
+	my $fh = shift;
+	my $r = '';
+	vec($r, fileno($fh), 1) = 1;
+	select($r, undef, undef, undef);
+}
+
+sub run_query
+{
+	my $query = shift;
+	my @command = @command_template;
+	@command = map {s/\$QUERY/$query/g; $_} @command;
+	
+	return async {
+		my $pid = open3(\*CHLD_IN, \*CHLD_OUT, \*CHLD_ERR, @command);
+		$MainQueue->enqueue('$CommandPid = $args[0]', $pid);
+		$MainQueue->enqueue('$win_result->{-bfg} = "red"');
+		
+		my $selected = select CHLD_IN;
+		$|++;
+		select $selected;
+		
+		seek $Input, 0, 0;
+		while(<$Input>)
+		{
+			print {CHLD_IN} $_;
+		}
+		close CHLD_IN;
+		
+		set_nonblock(CHLD_OUT);
+		my $cleared = 0;
+		while(wait_for_input(CHLD_OUT))
+		{
+			my $buf;
+			my $bytes = sysread CHLD_OUT, $buf, 4096;
+			if(defined $bytes)
+			{
+				last if $bytes == 0;
+				sleep 1;
+				if(not $cleared){ $MainQueue->enqueue('$edt_result->{-text} = ""'); $cleared = 1; }
+				$MainQueue->enqueue(['$edt_result->{-text} .= $args[0]', $buf]);
+				$MainQueue->enqueue('$win_result->draw');
+				$MainQueue->enqueue('$win_query->draw');
+			}
+			else
+			{
+				if(not $!{EAGAIN} and not $!{EWOULDBLOCK})
+				{
+					# TODO # read error
+					last;
+				}
+			}
+		}
+		waitpid $pid, 0;
+		my $cmd_status = $?;
+		
+		$MainQueue->enqueue(['query_finished($args[0])', $cmd_status]);
+	};
+}
+
+
+sub query_finished
+{
+	my $cmd_status = shift;
+	$win_result->{-bfg} = $border_color;
+	$CommandPid = undef;
+	
+	# TODO
+	
+	if($FireRequested)
+	{
+		$FireRequested = 0;
+		fire_query();
+	}
+}
+
+sub fire_query
+{
+	if(defined $CommandPid)
+	{
+		$FireRequested = 1;
+		kill SIGTERM, $CommandPid;
+	}
+	else
+	{
+		my $query = $edt_query->{-text};
+		$Thread = run_query($query);
+		$Thread->detach;
+	}
+}
+
+sub display_prev_result
+{
+	# TODO
+	$win_result->draw();
+}
+
+sub quit
+{
+	kill SIGTERM, $CommandPid if defined $CommandPid;
+	$ExitRequested = 1;
+}
+
+$SIG{'TERM'} = sub {
+	$MainQueue->enqueue('quit');
+};
+
+
+$CUI->set_binding(\&quit, "\cC");
+$CUI->set_binding(sub {Curses::refresh(); $win_result->draw(); $win_query->draw();}, "\cL");
+$CUI->set_binding(\&display_prev_result, "\cP");
+$CUI->set_binding(\&switch_focus, "\t");
+$CUI->set_binding(sub {$edt_result->toggle_wrapping(); $win_result->draw();}, "\cW");
+$CUI->set_binding(\&fire_query, $fire_key);
+
+$CUI->{-read_timeout} = 0.1;
+$border_color = $win_result->{-bfg};
+$edt_query->focus();
+
+
+# Curses::UI::mainloop
+{
+	$CUI->focus(undef, 1);
+	$CUI->draw;
+	doupdate();
+	for(;;)
+	{
+		$CUI->do_one_event;
+		my $item = $MainQueue->dequeue_nb();
+		if($item)
+		{
+			my $code = $item;
+			my @args;
+			if(ref $item eq 'ARRAY')
+			{
+				$code = $item->[0];
+				@args = map {$item->[$_]} 1..$#$item;
+			}
+			eval $code;
+		}
+		elsif(not defined $CommandPid and $ExitRequested)
+		{
+			last;
+		}
+	}
+}
+
+$CUI->DESTROY;
+
