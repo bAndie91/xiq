@@ -18,7 +18,7 @@ $type_timeout = 1500;
 $fire_key_spec = 'F5';
 $no_clear_on_exit = 0;
 $no_border = 0;
-@command_template = ['grep', '-i', '$QUERY'];
+@command_template = ('grep', '-i', '$QUERY');
 $no_separator_line = 0;
 $no_hscroll = 0;
 $no_vscroll = 0;
@@ -71,7 +71,10 @@ Options:
 exit 1;
 }
 
-@command_template = @ARGV;
+if(@ARGV)
+{
+	@command_template = @ARGV;
+}
 
 
 if($fire_key_spec =~ /^M-(.)$/) { $fire_key = '\e'.$1; }
@@ -125,24 +128,50 @@ my $edt_result = $win_result->add(
 	-readonly => 1,
 	-showoverflow => 0,
 	-wrapping => $wrapping,
-	-vscrollbar => $no_vscroll ? 0 : 'right',
-	-hscrollbar => $no_hscroll ? 0 : 'bottom',
+	-vscrollbar => 0,
+	-hscrollbar => 0,
 );
+
+sub adjust_scrollbars
+{
+	if($always_hscroll){ $edt_result->{-hscrollbar} = 1; }
+	if($always_vscroll){ $edt_result->{-vscrollbar} = 1; }
+	if(($always_hscroll and $always_vscroll) or ($no_hscroll and $no_vscroll)){ return; }
+	my $col;
+	my $row = 0;
+	for my $line (split /\n/, $edt_result->text)
+	{
+		my $len = length $line;
+		$col = $len if not defined $col or $len > $col;
+		$row++;
+	}
+	if(!$no_hscroll and !$always_hscroll){ $edt_result->{-hscrollbar} = !$edt_result->{-wrapping} && $col > $edt_result->canvaswidth ? 1 : 0; }
+	if(!$no_vscroll and !$always_vscroll){ $edt_result->{-vscrollbar} = $row > $edt_result->canvasheight ? 1 : 0; }
+}
+
+sub refresh_result
+{
+	adjust_scrollbars();
+	$win_result->draw;
+	$win_query->draw;
+}
+
+sub setresult
+{
+	$edt_result->text($_[0]);
+	refresh_result();
+}
+
+sub appendresult
+{
+	return setresult($edt_result->text . $_[0]);
+}
 
 sub switch_focus
 {
 	my $widget = shift;
 	my $key = shift;
 	$widget->focus_next();
-}
-
-sub sethashkey
-{
-	$_[0]->{$_[1]} = $_[2];
-}
-sub appendhashkey
-{
-	$_[0]->{$_[1]} .= $_[2];
 }
 
 sub set_nonblock
@@ -192,11 +221,8 @@ sub run_query
 			if(defined $bytes)
 			{
 				last if $bytes == 0;
-				sleep 1;
-				if(not $cleared){ $MainQueue->enqueue('$edt_result->{-text} = ""'); $cleared = 1; }
-				$MainQueue->enqueue(['$edt_result->{-text} .= $args[0]', $buf]);
-				$MainQueue->enqueue('$win_result->draw');
-				$MainQueue->enqueue('$win_query->draw');
+				if(not $cleared){ $MainQueue->enqueue('setresult("")'); $cleared = 1; }
+				$MainQueue->enqueue(['appendresult($args[0])', $buf]);
 			}
 			else
 			{
@@ -263,11 +289,11 @@ $SIG{'TERM'} = sub {
 
 
 $CUI->set_binding(\&quit, "\cC");
-$CUI->set_binding(sub {Curses::refresh(); $win_result->draw(); $win_query->draw();}, "\cL");
+$CUI->set_binding(sub {Curses::refresh(); $win_result->draw; $win_query->draw;}, "\cL");
 $CUI->set_binding(\&display_prev_result, "\cP");
 $CUI->set_binding(\&switch_focus, "\t");
-$CUI->set_binding(sub {$edt_result->toggle_wrapping(); $win_result->draw();}, "\cW");
-$CUI->set_binding(\&fire_query, $fire_key);
+$CUI->set_binding(sub {$edt_result->toggle_wrapping; refresh_result();}, "\cW");
+$win_query->set_binding(\&fire_query, $fire_key);
 
 $CUI->{-read_timeout} = 0.1;
 $border_color = $win_result->{-bfg};
