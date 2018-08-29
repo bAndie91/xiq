@@ -25,18 +25,20 @@ $no_vscroll = 0;
 $always_hscroll = 0;
 $always_vscroll = 0;
 $wrapping = 0;
+$query_box_bottom = 0;
+$tail_result = 0;
 
 
-
+Getopt::Long::Configure ('bundling', 'no_ignore_case');
 if(!GetOptions(
 	'p|prompt=s' => \$query_prompt,
 	'i|initial-query=s' => \$initial_query,
-	'S|size-limit=i' => \$size_limit,
+	'l|size-limit=i' => \$size_limit,
 	't|timeout=i' => \$type_timeout,
 	'k|key=s' => \$fire_key_spec,
 	'X|no-clear' => \$no_clear_on_exit,
 	'B|no-border' => \$no_border,
-	'no-separator' => \$no_separator_line,
+	'S|no-separator' => \$no_separator_line,
 	'no-scroll' => sub{ $no_hscroll = $no_vscroll = 1; },
 	'no-hscroll' => \$no_hscroll,
 	'no-vscroll' => \$no_vscroll,
@@ -44,13 +46,15 @@ if(!GetOptions(
 	'always-hscroll' => \$always_hscroll,
 	'always-vscroll' => \$always_vscroll,
 	'w|wrap' => \$wrapping,
+	'b|bottom' => \$query_box_bottom,
+	'T|tail' => \$tail_result,
 ))
 {
 print "Usage: [command-1] | $0 [options] -- [command-2] [args]
 Options:
   -p, --prompt STR         prompt in front of query field
   -i, --initial-query STR  initial query string
-  -S, --size-limit BYTES   below this size input kept in memory
+  -l, --size-limit BYTES   below this size input kept in memory
   -t, --timeout MSEC       wait this much milli-seconds before fire query, -1 to disable
   -k, --key KEY            fire query on keypress, possible KEY names e.g.
                            'M-f', 'C-f', 'KEY_ENTER', 'F5'
@@ -58,12 +62,12 @@ Options:
   -b, --bottom             show query box on the bottom (default is top)
   -T, --tail               show the tail of result (default is head)
   -B, --no-border          don't show border
-  --no-separator           don't show separator line  # TODO
+  -S, --no-separator       don't show separator line
   --no-scroll              don't show scrollbars
   --no-[hv]scroll          don't show horizontal/vertical scrollbar
   --always-scroll          always show scrollbars
   --always-[hv]scroll      always show horizontal/vertical scrollbar
-  --wrap                   default wrap result text (toggle with Ctrl-W)
+  -w, --wrap               default wrap result text (toggle with Ctrl-W)
   -X                       don't clear screen on exit
   
   command-2                command to filter input
@@ -95,7 +99,8 @@ my $border_color;
 my $ExitRequested = 0;
 my $FireRequested = 0;
 my $BuffereSize = 4 * 4096;
-
+my $query_box_height = 1;
+my $separator_line = $no_border && !$no_separator_line ? 1 : 0;
 
 
 my $CUI = new Curses::UI(
@@ -105,8 +110,8 @@ my $CUI = new Curses::UI(
 my $win_query = $CUI->add(
 	'win_query', 'Window',
 	-border => 0,
-	-y => 0,
-	-height => 1,
+	-y => $query_box_bottom ? $CUI->{-height}-$query_box_height : 0,
+	-height => $query_box_height,
 );
 my $lab_prompt = $win_query->add(
 	'lab_prompt', 'Label',
@@ -124,8 +129,18 @@ my $edt_query = $win_query->add(
 my $win_result = $CUI->add(
 	'win_result', 'Window',
 	-border => !$no_border,
-	-y => 1,
+	-y => $query_box_bottom ? 0 : $query_box_height,
+	-height => $CUI->{-height}-$query_box_height
 );
+if($separator_line)
+{
+	my $lab_hline = $win_result->add(
+		'lab_hline', 'Label',
+		-text => '-' x $win_result->canvaswidth,
+		-height => 1,
+		-y => $query_box_bottom ? $win_result->{-height}-1 : 0,
+	);
+}
 my $edt_result = $win_result->add(
 	'edt_result', 'TextEditor',
 	-readonly => 1,
@@ -133,6 +148,8 @@ my $edt_result = $win_result->add(
 	-wrapping => $wrapping,
 	-vscrollbar => 0,
 	-hscrollbar => 0,
+	-y => !$query_box_bottom && $separator_line ? 1 : 0,
+	-height => $separator_line ? $win_result->{-height}-1 : -1,
 );
 
 sub adjust_scrollbars
@@ -152,7 +169,6 @@ sub adjust_scrollbars
 	}
 	if(!$no_hscroll and !$always_hscroll){ $edt_result->{-hscrollbar} = !$edt_result->{-wrapping} && $col > $edt_result->canvaswidth ? 1 : 0; }
 	if(!$no_vscroll and !$always_vscroll){ $edt_result->{-vscrollbar} = $row > $edt_result->canvasheight ? 1 : 0; }
-	$CUI->status(join " ", $col, $edt_result->canvaswidth, $row, $edt_result->canvasheight);
 }
 
 sub refresh_result
@@ -167,6 +183,7 @@ sub setresult
 {
 	$edt_result->text($_[0]);
 	refresh_result();
+	if($tail_result){ $MainQueue->enqueue('$edt_result->cursor_to_end; $edt_result->draw'); }
 }
 
 sub appendresult
@@ -206,7 +223,7 @@ sub run_query
 	return async {
 		my $pid = open3(\*CHLD_IN, \*CHLD_OUT, \*CHLD_ERR, @command);
 		$MainQueue->enqueue('$CommandPid = $args[0]', $pid);
-		$MainQueue->enqueue('$win_result->{-bfg} = "red"');
+		$MainQueue->enqueue('$win_result->{-bfg} = "red"; $win_result->draw');
 		
 		my $selected = select CHLD_IN;
 		$|++;
@@ -252,6 +269,7 @@ sub query_finished
 {
 	my $cmd_status = shift;
 	$win_result->{-bfg} = $border_color;
+	$win_result->draw;
 	$CommandPid = undef;
 	
 	# TODO
