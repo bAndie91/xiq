@@ -177,18 +177,24 @@ sub refresh_result
 	$edt_result->layout;
 	$win_result->draw;
 	$win_query->draw;
+	if($tail_result){ $MainQueue->enqueue('$edt_result->cursor_to_end; $edt_result->draw'); }
 }
 
 sub setresult
 {
 	$edt_result->text($_[0]);
 	refresh_result();
-	if($tail_result){ $MainQueue->enqueue('$edt_result->cursor_to_end; $edt_result->draw'); }
 }
 
 sub appendresult
 {
-	return setresult($edt_result->text . $_[0]);
+	$edt_result->text .= $_[0];
+	refresh_result();
+}
+
+sub error_result
+{
+	#TODO
 }
 
 sub switch_focus
@@ -220,8 +226,20 @@ sub run_query
 	my @command = @command_template;
 	@command = map {s/\$QUERY/$query/g; $_} @command;
 	
+	$ENV{'XIQ_QUERY'} = $query;
 	return async {
-		my $pid = open3(\*CHLD_IN, \*CHLD_OUT, \*CHLD_ERR, @command);
+		my $pid;
+		eval {
+			$pid = open3(\*CHLD_IN, \*CHLD_OUT, \*CHLD_ERR, @command);
+			1;
+		};
+		if($@)
+		{
+			$MainQueue->enqueue(['error_result($args[0])', $@]);
+			$MainQueue->enqueue(['query_finished($args[0])', -1]);
+			return;
+		}
+		
 		$MainQueue->enqueue('$CommandPid = $args[0]', $pid);
 		$MainQueue->enqueue('$win_result->{-bfg} = "red"; $win_result->draw');
 		
@@ -258,9 +276,9 @@ sub run_query
 			}
 		}
 		waitpid $pid, 0;
-		my $cmd_status = $?;
+		my $exit_status = $?;
 		
-		$MainQueue->enqueue(['query_finished($args[0])', $cmd_status]);
+		$MainQueue->enqueue(['query_finished($args[0])', $exit_status]);
 	};
 }
 
@@ -272,7 +290,12 @@ sub query_finished
 	$win_result->draw;
 	$CommandPid = undef;
 	
-	# TODO
+	if($cmd_status != 0)
+	{
+		my $exit_signal = $cmd_status & 0x7F;
+		my $exit_code = $cmd_status >> 8;
+		# TODO
+	}
 	
 	if($FireRequested)
 	{
@@ -317,7 +340,7 @@ $CUI->set_binding(\&quit, "\cC");
 $CUI->set_binding(sub {Curses::refresh(); $win_result->draw; $win_query->draw;}, "\cL");
 $CUI->set_binding(\&display_prev_result, "\cP");
 $CUI->set_binding(\&switch_focus, "\t");
-$CUI->set_binding(sub {$edt_result->toggle_wrapping; refresh_result();}, "\cW");
+$CUI->set_binding(sub {$edt_result->toggle_wrapping; refresh_result();}, KEY_F(2));
 $win_query->set_binding(\&fire_query, $fire_key) if defined $fire_key;
 
 $CUI->{-read_timeout} = 0.1;
