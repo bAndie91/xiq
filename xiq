@@ -15,7 +15,7 @@ $query_prompt = "> ";
 $initial_query = '';
 $size_limit = 1024*1024;
 $type_timeout = 1500;
-$fire_key_spec = 'F5';
+$fire_key_spec = '';
 $no_clear_on_exit = 0;
 $no_border = 0;
 @command_template = ('grep', '-i', '$QUERY');
@@ -25,6 +25,7 @@ $no_vscroll = 0;
 $always_hscroll = 0;
 $always_vscroll = 0;
 $wrapping = 0;
+
 
 
 if(!GetOptions(
@@ -81,6 +82,7 @@ if($fire_key_spec =~ /^M-(.)$/) { $fire_key = '\e'.$1; }
 elsif($fire_key_spec =~ /^C-(.)$/) { $fire_key = '\c'.$1; }
 elsif($fire_key_spec =~ /^KEY_[[:alnum:]]+$/) { $fire_key = eval $fire_key_spec; }
 elsif($fire_key_spec =~ /^F(\d+)$/) { $fire_key = KEY_F($1); }
+elsif($fire_key_spec eq '') { $fire_key = undef; }
 else { die "Invalid KEY name: $fire_key_spec\n"; }
 
 
@@ -92,6 +94,7 @@ my $MainQueue = new Thread::Queue;
 my $border_color;
 my $ExitRequested = 0;
 my $FireRequested = 0;
+my $BuffereSize = 4 * 4096;
 
 
 
@@ -136,22 +139,26 @@ sub adjust_scrollbars
 {
 	if($always_hscroll){ $edt_result->{-hscrollbar} = 1; }
 	if($always_vscroll){ $edt_result->{-vscrollbar} = 1; }
+	if($no_hscroll){ $edt_result->{-hscrollbar} = 0; }
+	if($no_vscroll){ $edt_result->{-vscrollbar} = 0; }
 	if(($always_hscroll and $always_vscroll) or ($no_hscroll and $no_vscroll)){ return; }
-	my $col;
+	my $col = 0;
 	my $row = 0;
 	for my $line (split /\n/, $edt_result->text)
 	{
 		my $len = length $line;
-		$col = $len if not defined $col or $len > $col;
+		$col = $len if $len > $col;
 		$row++;
 	}
 	if(!$no_hscroll and !$always_hscroll){ $edt_result->{-hscrollbar} = !$edt_result->{-wrapping} && $col > $edt_result->canvaswidth ? 1 : 0; }
 	if(!$no_vscroll and !$always_vscroll){ $edt_result->{-vscrollbar} = $row > $edt_result->canvasheight ? 1 : 0; }
+	$CUI->status(join " ", $col, $edt_result->canvaswidth, $row, $edt_result->canvasheight);
 }
 
 sub refresh_result
 {
 	adjust_scrollbars();
+	$edt_result->layout;
 	$win_result->draw;
 	$win_query->draw;
 }
@@ -217,7 +224,7 @@ sub run_query
 		while(wait_for_input(CHLD_OUT))
 		{
 			my $buf;
-			my $bytes = sysread CHLD_OUT, $buf, 4096;
+			my $bytes = sysread CHLD_OUT, $buf, $BuffereSize;
 			if(defined $bytes)
 			{
 				last if $bytes == 0;
@@ -274,7 +281,7 @@ sub fire_query
 sub display_prev_result
 {
 	# TODO
-	$win_result->draw();
+	refresh_result();
 }
 
 sub quit
@@ -293,7 +300,7 @@ $CUI->set_binding(sub {Curses::refresh(); $win_result->draw; $win_query->draw;},
 $CUI->set_binding(\&display_prev_result, "\cP");
 $CUI->set_binding(\&switch_focus, "\t");
 $CUI->set_binding(sub {$edt_result->toggle_wrapping; refresh_result();}, "\cW");
-$win_query->set_binding(\&fire_query, $fire_key);
+$win_query->set_binding(\&fire_query, $fire_key) if defined $fire_key;
 
 $CUI->{-read_timeout} = 0.1;
 $border_color = $win_result->{-bfg};
