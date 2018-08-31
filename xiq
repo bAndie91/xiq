@@ -156,10 +156,13 @@ my $edt_result = $win_result->add(
 	-y => !$query_box_bottom && $separator_line ? 1 : 0,
 	-height => $separator_line ? $win_result->{-height}-1 : -1,
 );
+my $half_height = int $win_result->{-height} / 2;
 my $win_filterer = $CUI->add(
 	'win_filterer', 'Window',
 	-border => 1,
-	-title => "Edit Filter command [F8 - apply] [Esc - Discard]",
+	-title => "Edit Filter command  [F8: apply] [Esc: Discard]",
+	-y => $tail_result ? $win_result->{-y} : $win_result->{-y} + $win_result->{-height} - $half_height,
+	-height => $half_height,
 );
 my $edt_filterer = $win_filterer->add(
 	'edt_filterer', 'TextEditor',
