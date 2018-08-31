@@ -35,6 +35,7 @@ $hotkey_quit = "\cC";
 $hotkey_prev_result = "\cP";
 $hotkey_wrap = KEY_F(2);
 $hotkey_edit_filterer = KEY_F(8);
+$hotkey_tail_head = "\cT";
 
 # TODO history file $QUERY
 
@@ -169,17 +170,19 @@ my $edt_result = $win_result->add(
 	-height => $separator_line ? $win_result->{-height}-1 : -1,
 );
 my $half_height = int $win_result->{-height} / 2;
+sub win_filterer_y {return $tail_result ? $win_result->{-y} : $win_result->{-y} + $win_result->{-height} - $half_height;}
 my $win_filterer = $CUI->add(
 	'win_filterer', 'Window',
 	-border => 1,
 	-title => "Edit Filter command  [F8: apply] [Esc: Discard]",
-	-y => $tail_result ? $win_result->{-y} : $win_result->{-y} + $win_result->{-height} - $half_height,
+	-y => win_filterer_y(),
 	-height => $half_height,
 );
 my $edt_filterer = $win_filterer->add(
 	'edt_filterer', 'TextEditor',
 );
 $win_filterer->focusable(0);
+$CUI->{current_focus_id} = $CUI->{-draworder}->[-1];
 
 
 sub adjust_scrollbars
@@ -227,13 +230,6 @@ sub appendresult
 sub error_result
 {
 	#TODO
-}
-
-sub switch_focus
-{
-	my $widget = shift;
-	my $key = shift;
-	$widget->focus_next();
 }
 
 sub set_nonblock
@@ -373,8 +369,10 @@ sub edit_filterer
 		my $pos = $edt_filterer->{-pos};
 		$edt_filterer->text(join " ", @command_template);
 		$edt_filterer->{-pos} = $pos;
+		$win_filterer->{stolen_focus_from_id} = $CUI->{current_focus_id};
 		$win_filterer->focusable(1);
-		$win_filterer->modalfocus;
+		$win_query->focusable(0);
+		$win_result->focusable(0);
 		$edt_filterer->focus;
 		$win_filterer->draw;
 	}
@@ -382,11 +380,30 @@ sub edit_filterer
 
 sub hide_filterer
 {
-	$win_filterer->loose_focus;
+	$win_query->focusable(1);
+	$win_result->focusable(1);
 	$win_filterer->focusable(0);
-	$MainQueue->enqueue('$win_query->focus; $win_result->draw; $win_query->draw');
+	$CUI->{-id2object}->{$win_filterer->{stolen_focus_from_id}}->focus;
+	$win_result->draw;
+	$win_query->draw;
 }
 
+sub switch_focus
+{
+	my $widget = shift;
+	my $key = shift;
+	$widget->focus_next();
+	$CUI->{current_focus_id} = $CUI->{-draworder}->[-1];
+}
+
+sub toggle_tail_head
+{
+	$tail_result = !$tail_result;
+	$win_filterer->{-y} = win_filterer_y();
+	$win_filterer->layout;
+	$win_result->draw;
+	$win_query->draw;
+}
 
 sub display_prev_result
 {
@@ -415,7 +432,7 @@ $win_query->set_binding(\&fire_query, $hotkey_fire) if defined $hotkey_fire;
 $CUI->set_binding(\&edit_filterer, $hotkey_edit_filterer);
 $win_filterer->set_binding(\&edit_filterer, $hotkey_edit_filterer);
 $win_filterer->set_binding(\&hide_filterer, "\e");
-$win_filterer->set_binding(\&quit, $hotkey_quit);  # FIXME
+$CUI->set_binding(\&toggle_tail_head, $hotkey_tail_head);
 
 
 
