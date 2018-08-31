@@ -315,7 +315,6 @@ sub run_query
 		
 		waitpid $pid, 0;
 		my $exit_status = $?;
-		
 		$MainQueue->enqueue(['query_finished($args[0])', $exit_status]);
 	};
 }
@@ -324,15 +323,15 @@ sub run_query
 sub query_finished
 {
 	my $cmd_status = shift;
+	$CommandPid = undef;
 	$win_result->{-bfg} = $border_color;
 	$win_result->draw;
-	$CommandPid = undef;
 	
 	if($cmd_status != 0)
 	{
 		my $exit_signal = $cmd_status & 0x7F;
 		my $exit_code = $cmd_status >> 8;
-		# TODO
+		error_result("Exit code $exit_code, signal $exit_signal");
 	}
 	
 	if($FireRequested)
@@ -403,6 +402,7 @@ sub toggle_tail_head
 	$win_filterer->layout;
 	$win_result->draw;
 	$win_query->draw;
+	$win_filterer->draw if $win_filterer->{-focusable};
 }
 
 sub display_prev_result
