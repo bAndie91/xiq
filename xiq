@@ -15,7 +15,7 @@ $query_prompt = "> ";
 $initial_query = '';
 $size_limit = 1024*1024;
 $type_timeout = 1500;
-$fire_key_spec = '';
+$hotkey_fire_spec = '';
 $no_clear_on_exit = 0;
 $no_border = 0;
 @command_template = ('grep', '-i', '$QUERY');
@@ -27,6 +27,10 @@ $always_vscroll = 0;
 $wrapping = 0;
 $query_box_bottom = 0;
 $tail_result = 0;
+$hotkey_quit = "\cC";
+$hotkey_prev_result = "\cP";
+$hotkey_wrap = KEY_F(2);
+$hotkey_edit_filterer = KEY_F(8);
 
 
 Getopt::Long::Configure ('bundling', 'no_ignore_case');
@@ -35,7 +39,7 @@ if(!GetOptions(
 	'i|initial-query=s' => \$initial_query,
 	'l|size-limit=i' => \$size_limit,
 	't|timeout=i' => \$type_timeout,
-	'k|key=s' => \$fire_key_spec,
+	'k|key=s' => \$hotkey_fire_spec,
 	'X|no-clear' => \$no_clear_on_exit,
 	'B|no-border' => \$no_border,
 	'S|no-separator' => \$no_separator_line,
@@ -82,12 +86,12 @@ if(@ARGV)
 }
 
 
-if($fire_key_spec =~ /^M-(.)$/) { $fire_key = '\e'.$1; }
-elsif($fire_key_spec =~ /^C-(.)$/) { $fire_key = '\c'.$1; }
-elsif($fire_key_spec =~ /^KEY_[[:alnum:]]+$/) { $fire_key = eval $fire_key_spec; }
-elsif($fire_key_spec =~ /^F(\d+)$/) { $fire_key = KEY_F($1); }
-elsif($fire_key_spec eq '') { $fire_key = undef; }
-else { die "Invalid KEY name: $fire_key_spec\n"; }
+if($hotkey_fire_spec =~ /^M-(.)$/) { $hotkey_fire = eval '"\e'.$1.'"'; }
+elsif($hotkey_fire_spec =~ /^C-(.)$/) { $hotkey_fire = eval '"\c'.$1.'"'; }
+elsif($hotkey_fire_spec =~ /^KEY_[[:alnum:]]+$/) { $hotkey_fire = eval $hotkey_fire_spec; }
+elsif($hotkey_fire_spec =~ /^F(\d+)$/) { $hotkey_fire = KEY_F($1); }
+elsif($hotkey_fire_spec eq '') { $hotkey_fire = undef; }
+else { die "Invalid KEY name: $hotkey_fire_spec\n"; }
 
 
 open my $Input, '<x';  # TODO
@@ -151,6 +155,16 @@ my $edt_result = $win_result->add(
 	-y => !$query_box_bottom && $separator_line ? 1 : 0,
 	-height => $separator_line ? $win_result->{-height}-1 : -1,
 );
+my $win_filterer = $CUI->add(
+	'win_filterer', 'Window',
+	-border => 1,
+	-title => "Edit Filter command [F8 - apply] [Esc - Discard]",
+);
+my $edt_filterer = $win_filterer->add(
+	'edt_filterer', 'TextEditor',
+);
+$win_filterer->focusable(0);
+
 
 sub adjust_scrollbars
 {
@@ -318,6 +332,33 @@ sub fire_query
 		$Thread->detach;
 	}
 }
+
+sub edit_filterer
+{
+	if($win_filterer->{-focusable})
+	{
+		@command_template = split / /, $edt_filterer->text;
+		hide_filterer();
+	}
+	else
+	{
+		my $pos = $edt_filterer->{-pos};
+		$edt_filterer->text(join " ", @command_template);
+		$edt_filterer->{-pos} = $pos;
+		$win_filterer->focusable(1);
+		$win_filterer->modalfocus;
+		$edt_filterer->focus;
+		$win_filterer->draw;
+	}
+}
+
+sub hide_filterer
+{
+	$win_filterer->loose_focus;
+	$win_filterer->focusable(0);
+	$MainQueue->enqueue('$win_query->focus; $win_result->draw; $win_query->draw');
+}
+
 
 sub display_prev_result
 {
