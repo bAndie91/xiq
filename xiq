@@ -154,7 +154,7 @@ if($separator_line)
 {
 	my $lab_hline = $win_result->add(
 		'lab_hline', 'Label',
-		-text => '-' x $win_result->canvaswidth,
+		-text => "\x{2500}" x $win_result->canvaswidth,
 		-height => 1,
 		-y => $query_box_bottom ? $win_result->{-height}-1 : 0,
 	);
@@ -222,8 +222,8 @@ sub setresult
 sub appendresult
 {
 	# FIXME
-#	$edt_result->{-text} .= $_[0];
-	$edt_result->text($edt_result->text . $_[0]);
+	$edt_result->{-text} .= $_[0];
+	$edt_result->layout_content;
 	refresh_result();
 }
 
