@@ -187,6 +187,13 @@ $CUI->{current_focus_id} = $CUI->{-draworder}->[-1];
 
 sub adjust_scrollbars
 {
+	my ($h, $v) = ($edt_result->{-hscrollbar}, $edt_result->{-vscrollbar});
+	adjust_scrollbars_do();
+	return($edt_result->{-hscrollbar} ne $h or $edt_result->{-vscrollbar} ne $v);
+}
+
+sub adjust_scrollbars_do
+{
 	if($always_hscroll){ $edt_result->{-hscrollbar} = 1; }
 	if($always_vscroll){ $edt_result->{-vscrollbar} = 1; }
 	if($no_hscroll){ $edt_result->{-hscrollbar} = 0; }
@@ -206,11 +213,20 @@ sub adjust_scrollbars
 
 sub refresh_result
 {
-	adjust_scrollbars();
-	$edt_result->layout;
+	if(adjust_scrollbars())
+	{
+		$edt_result->layout;
+	}
 	$win_result->draw;
 	$win_query->draw;
-	if($tail_result){ $MainQueue->enqueue('$edt_result->cursor_to_end; $edt_result->draw'); }
+	if($tail_result)
+	{
+		$MainQueue->enqueue('$edt_result->cursor_to_end; $edt_result->draw');
+	}
+	if($win_filterer->{-focusable})
+	{
+		$win_filterer->draw;
+	}
 }
 
 sub setresult
@@ -221,10 +237,7 @@ sub setresult
 
 sub appendresult
 {
-	# FIXME
-	$edt_result->{-text} .= $_[0];
-	$edt_result->layout_content;
-	refresh_result();
+	setresult($edt_result->text . $_[0]);
 }
 
 sub error_result
