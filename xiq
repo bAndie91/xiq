@@ -285,8 +285,11 @@ sub run_query
 			return;
 		}
 		
-		$MainQueue->enqueue('$CommandPid = $args[0]', $pid);
-		$MainQueue->enqueue('$win_result->{-bfg} = "red"; $win_result->draw');
+		$MainQueue->enqueue(q{
+			$CommandPid = $args[0];
+			$win_result->{-bfg} = "red";
+			$win_result->draw
+		}, $pid);
 		
 		my $feedThread = async {
 			open my $input, '<&', $InputFH;
@@ -418,6 +421,13 @@ sub toggle_tail_head
 	$win_filterer->draw if $win_filterer->{-focusable};
 }
 
+sub redraw
+{
+	Curses::refresh();
+	$win_result->draw;
+	$win_query->draw;
+}
+
 sub display_prev_result
 {
 	# TODO
@@ -437,7 +447,7 @@ $SIG{'TERM'} = sub {
 
 
 $CUI->set_binding(\&quit, $hotkey_quit);
-$CUI->set_binding(sub {Curses::refresh(); $win_result->draw; $win_query->draw;}, "\cL");
+$CUI->set_binding(\&redraw, "\cL");
 $CUI->set_binding(\&display_prev_result, $hotkey_prev_result);
 $CUI->set_binding(\&switch_focus, "\t");
 $CUI->set_binding(sub {$edt_result->toggle_wrapping; refresh_result();}, $hotkey_wrap);
