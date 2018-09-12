@@ -144,21 +144,25 @@ my $edt_query = $win_query->add(
 	-pos => length $initial_query,
 	-x => length $query_prompt,
 );
+if($separator_line)  # FIXME!! SIGSEGV
+{
+	my $win_hline = $CUI->add(
+		'win_hline', 'Window',
+		-height => 1,
+		-y => $query_box_bottom ? $CUI->{-height}-$query_box_height-1 : $query_box_height,
+	);
+	my $lab_hline = $win_hline->add(
+		'lab_hline', 'Label',
+		-text => "\x{2500}" x $win_hline->canvaswidth,
+	);
+	$win_hline->focusable(0);
+}
 my $win_result = $CUI->add(
 	'win_result', 'Window',
 	-border => !$no_border,
-	-y => $query_box_bottom ? 0 : $query_box_height,
-	-height => $CUI->{-height}-$query_box_height
+	-y => $query_box_bottom ? 0 : $query_box_height + $separator_line,
+	-height => $CUI->{-height} - $query_box_height - $separator_line,
 );
-if($separator_line)
-{
-	my $lab_hline = $win_result->add(
-		'lab_hline', 'Label',
-		-text => "\x{2500}" x $win_result->canvaswidth,
-		-height => 1,
-		-y => $query_box_bottom ? $win_result->{-height}-1 : 0,
-	);
-}
 my $edt_result = $win_result->add(
 	'edt_result', 'TextEditor',
 	-readonly => 1,
@@ -166,8 +170,8 @@ my $edt_result = $win_result->add(
 	-wrapping => $wrapping,
 	-vscrollbar => 0,
 	-hscrollbar => 0,
-	-y => !$query_box_bottom && $separator_line ? 1 : 0,
-	-height => $separator_line ? $win_result->{-height}-1 : -1,
+	-y => 0,
+	-height => -1,
 );
 my $half_height = int $win_result->{-height} / 2;
 sub win_filterer_y {return $tail_result ? $win_result->{-y} : $win_result->{-y} + $win_result->{-height} - $half_height;}
@@ -189,7 +193,9 @@ sub adjust_scrollbars
 {
 	my ($h, $v) = ($edt_result->{-hscrollbar}, $edt_result->{-vscrollbar});
 	adjust_scrollbars_do();
-	return($edt_result->{-hscrollbar} ne $h or $edt_result->{-vscrollbar} ne $v);
+	my $changed = ($edt_result->{-hscrollbar} ne $h or $edt_result->{-vscrollbar} ne $v);
+	$edt_result->layout if $changed;
+	return $changed;
 }
 
 sub adjust_scrollbars_do
@@ -213,15 +219,12 @@ sub adjust_scrollbars_do
 
 sub refresh_result
 {
-	if(adjust_scrollbars())
-	{
-		$edt_result->layout;
-	}
+	adjust_scrollbars();
 	$win_result->draw;
 	$win_query->draw;
 	if($tail_result)
 	{
-		$MainQueue->enqueue('$edt_result->cursor_to_end; $edt_result->draw');
+		$MainQueue->enqueue('$edt_result->cursor_to_end; $edt_result->draw');  # FIXME
 	}
 	if($win_filterer->{-focusable})
 	{
@@ -288,7 +291,7 @@ sub run_query
 		$MainQueue->enqueue(q{
 			$CommandPid = $args[0];
 			$win_result->{-bfg} = "red";
-			$win_result->draw
+			$win_result->draw;
 		}, $pid);
 		
 		my $feedThread = async {
@@ -341,7 +344,7 @@ sub query_finished
 	my $cmd_status = shift;
 	$CommandPid = undef;
 	$win_result->{-bfg} = $border_color;
-	$win_result->draw;
+	refresh_result();
 	
 	if($cmd_status != 0)
 	{
@@ -461,6 +464,7 @@ $CUI->set_binding(\&toggle_tail_head, $hotkey_tail_head);
 
 $CUI->{-read_timeout} = 0.1;
 $border_color = $win_result->{-bfg};
+adjust_scrollbars();
 $edt_query->focus();
 
 
