@@ -6,7 +6,7 @@ use Curses::UI;
 use Getopt::Long;
 use Data::Dumper;
 use IPC::Open3;
-use threads;
+use Thread ':DEFAULT', 'async';
 use Thread::Queue;
 use POSIX;
 use Fcntl ':flock';
@@ -103,7 +103,7 @@ else { die "Invalid KEY name: $hotkey_fire_spec\n"; }
 
 
 my $InputFH;
-my $Thread;
+my $queryThread;
 my $CommandPid;
 my $MainQueue = new Thread::Queue;
 my $border_color;
@@ -288,11 +288,7 @@ sub run_query
 			return;
 		}
 		
-		$MainQueue->enqueue(q{
-			$CommandPid = $args[0];
-			$win_result->{-bfg} = "red";
-			$win_result->draw;
-		}, $pid);
+		$MainQueue->enqueue(['query_started($args[0])', $pid]);
 		
 		my $feedThread = async {
 			open my $input, '<&', $InputFH;
@@ -339,6 +335,13 @@ sub run_query
 }
 
 
+sub query_started
+{
+	my $pid = shift;
+	$CommandPid = $pid;
+	$win_result->{-bfg} = "red";
+	$win_result->draw;
+}
 sub query_finished
 {
 	my $cmd_status = shift;
@@ -370,8 +373,8 @@ sub fire_query
 	else
 	{
 		my $query = $edt_query->{-text};
-		$Thread = run_query($query);
-		$Thread->detach;
+		$queryThread = run_query($query);
+		$queryThread->detach;
 	}
 }
 
@@ -471,7 +474,7 @@ $edt_query->focus();
 
 ($InputFH, $InputFN) = tempfile("xiq-input-XXXXX", DIR => '/var/run/shm');
 unlink $InputFN;
-$InputThread = async {
+$inputThread = async {
 	# TODO loading...
 	# TODO nonblocking read in larger buffers
 	while(<$STDIN>)
@@ -480,7 +483,7 @@ $InputThread = async {
 	}
 	#TODO finished
 };
-$InputThread->detach;
+$inputThread->detach;
 
 
 # Curses::UI::mainloop
