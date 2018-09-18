@@ -276,6 +276,7 @@ sub run_query
 	$ENV{'BUF_1_'} = 0;
 	
 	return async {
+		$SIG{'TERM'} = undef;
 		my $pid;
 		eval {
 			$pid = open3(\*CHLD_IN, \*CHLD_OUT, \*CHLD_ERR, @command);
@@ -475,6 +476,7 @@ $edt_query->focus();
 ($InputFH, $InputFN) = tempfile("xiq-input-XXXXX", DIR => '/var/run/shm');
 unlink $InputFN;
 $inputThread = async {
+	$SIG{'TERM'} = undef;
 	# TODO loading...
 	# TODO nonblocking read in larger buffers
 	while(<$STDIN>)
