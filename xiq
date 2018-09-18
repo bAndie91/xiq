@@ -277,6 +277,10 @@ sub run_query
 	
 	return async {
 		$SIG{'TERM'} = undef;
+		undef *Curses::UI;
+		undef *Curses;
+		undef $CUI;
+		
 		my $pid;
 		eval {
 			$pid = open3(\*CHLD_IN, \*CHLD_OUT, \*CHLD_ERR, @command);
@@ -477,6 +481,9 @@ $edt_query->focus();
 unlink $InputFN;
 $inputThread = async {
 	$SIG{'TERM'} = undef;
+	undef *Curses::UI;
+	undef *Curses;
+	undef $CUI;
 	# TODO loading...
 	# TODO nonblocking read in larger buffers
 	while(<$STDIN>)
