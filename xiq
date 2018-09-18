@@ -121,24 +121,24 @@ close STDIN or die "$!\n";
 open STDIN, '<', '/dev/tty' or die "$!\n";
 
 
-my $CUI = new Curses::UI(
+$CUI = new Curses::UI(
 	-color_support => 1,
 	-clear_on_exit => !$no_clear_on_exit,
 );
-my $win_query = $CUI->add(
+$win_query = $CUI->add(
 	'win_query', 'Window',
 	-border => 0,
 	-y => $query_box_bottom ? $CUI->{-height}-$query_box_height : 0,
 	-height => $query_box_height,
 );
-my $lab_prompt = $win_query->add(
+$lab_prompt = $win_query->add(
 	'lab_prompt', 'Label',
 	-text => $query_prompt,
 	-bold => 1,
 	-border => 0,
 	-width => length $query_prompt,
 );
-my $edt_query = $win_query->add(
+$edt_query = $win_query->add(
 	'edt_query', 'TextEditor',
 	-text => $initial_query,
 	-pos => length $initial_query,
@@ -146,24 +146,24 @@ my $edt_query = $win_query->add(
 );
 if($separator_line)  # FIXME!! SIGSEGV
 {
-	my $win_hline = $CUI->add(
+	$win_hline = $CUI->add(
 		'win_hline', 'Window',
 		-height => 1,
 		-y => $query_box_bottom ? $CUI->{-height}-$query_box_height-1 : $query_box_height,
 	);
-	my $lab_hline = $win_hline->add(
+	$lab_hline = $win_hline->add(
 		'lab_hline', 'Label',
 		-text => "\x{2500}" x $win_hline->canvaswidth,
 	);
 	$win_hline->focusable(0);
 }
-my $win_result = $CUI->add(
+$win_result = $CUI->add(
 	'win_result', 'Window',
 	-border => !$no_border,
 	-y => $query_box_bottom ? 0 : $query_box_height + $separator_line,
 	-height => $CUI->{-height} - $query_box_height - $separator_line,
 );
-my $edt_result = $win_result->add(
+$edt_result = $win_result->add(
 	'edt_result', 'TextEditor',
 	-readonly => 1,
 	-showoverflow => 0,
@@ -175,14 +175,14 @@ my $edt_result = $win_result->add(
 );
 my $half_height = int $win_result->{-height} / 2;
 sub win_filterer_y {return $tail_result ? $win_result->{-y} : $win_result->{-y} + $win_result->{-height} - $half_height;}
-my $win_filterer = $CUI->add(
+$win_filterer = $CUI->add(
 	'win_filterer', 'Window',
 	-border => 1,
 	-title => "Edit Filter command  [F8: apply] [Esc: Discard]",
 	-y => win_filterer_y(),
 	-height => $half_height,
 );
-my $edt_filterer = $win_filterer->add(
+$edt_filterer = $win_filterer->add(
 	'edt_filterer', 'TextEditor',
 );
 $win_filterer->focusable(0);
@@ -436,6 +436,8 @@ sub redraw
 {
 	Curses::refresh();
 	$win_result->draw;
+	$win_hline->draw;
+	$win_filterer->draw if $win_filterer->{-focusable};
 	$win_query->draw;
 }
 
