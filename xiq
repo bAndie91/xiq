@@ -1,11 +1,8 @@
 #!/usr/bin/env perl
 
 use warnings;
-use Curses;
-use Curses::UI;
 use Getopt::Long;
 use Data::Dumper;
-use IPC::Open3;
 use Thread ':DEFAULT', 'async';
 use Thread::Queue;
 use POSIX;
@@ -31,11 +28,6 @@ $wrapping = 0;
 $query_box_bottom = 0;
 $tail_result = 0;
 $stream_filter = 0;
-$hotkey_quit = "\cC";
-$hotkey_prev_result = "\cP";
-$hotkey_wrap = KEY_F(2);
-$hotkey_edit_filterer = KEY_F(8);
-$hotkey_tail_head = "\cT";
 
 # TODO history file $QUERY
 
@@ -94,18 +86,10 @@ if(@ARGV)
 }
 
 
-if($hotkey_fire_spec =~ /^M-(.)$/) { $hotkey_fire = eval '"\e'.$1.'"'; }
-elsif($hotkey_fire_spec =~ /^C-(.)$/) { $hotkey_fire = eval '"\c'.$1.'"'; }
-elsif($hotkey_fire_spec =~ /^KEY_[[:alnum:]]+$/) { $hotkey_fire = eval $hotkey_fire_spec; }
-elsif($hotkey_fire_spec =~ /^F(\d+)$/) { $hotkey_fire = KEY_F($1); }
-elsif($hotkey_fire_spec eq '') { $hotkey_fire = undef; }
-else { die "Invalid KEY name: $hotkey_fire_spec\n"; }
 
-
-my $InputFH;
-my $queryThread;
 my $CommandPid;
 my $MainQueue = new Thread::Queue;
+my $RunnerQueue = new Thread::Queue;
 my $border_color;
 my $ExitRequested = 0;
 my $FireRequested = 0;
@@ -114,11 +98,107 @@ my $query_box_height = 1;
 my $separator_line = $no_border && !$no_separator_line ? 1 : 0;
 
 
-
 # Move stdin away. Set stdin to tty to let Curses read it.
 open $STDIN, '<&', STDIN or die "$!\n";
 close STDIN or die "$!\n";
 open STDIN, '<', '/dev/tty' or die "$!\n";
+
+
+# Spawn the query runner thread before instanciate Curses.
+sub query_runner_thread
+{
+	for my $module (qw/IPC::Open3/)
+	{
+		eval "require $module" or die $@;
+		$module->import();
+	}
+	while(my $item = $RunnerQueue->dequeue())
+	{
+		my ($query, $input_fileno, @command) = @$item;
+		
+		$ENV{'XIQ_QUERY'} = $query;
+		$ENV{'BUF_0_'} = 0;
+		$ENV{'BUF_1_'} = 0;
+		
+		my $pid;
+		eval {
+			$pid = open3(\*CHLD_IN, \*CHLD_OUT, \*CHLD_ERR, @command);
+			1;
+		};
+		if($@)
+		{
+			$MainQueue->enqueue(['error_result($args[0])', $@]);
+			$MainQueue->enqueue(['query_finished($args[0])', -1]);
+			return;
+		}
+		
+		$MainQueue->enqueue(['query_started($args[0])', $pid]);
+		
+		my $feedThread = async {
+			open my $input, '<&=', $input_fileno;
+			seek $input, 0, 0;
+			CHLD_IN->autoflush(1);
+			$SIG{'PIPE'} = 'IGNORE'; #FIXME
+			# TODO nonblocking read larger buffers
+			while(<$input>)
+			{
+				print {CHLD_IN} $_;
+			}
+			close CHLD_IN;
+			close $input;
+		};
+		$feedThread->detach;
+		close CHLD_IN;
+		
+		set_nonblock(CHLD_OUT);
+		my $cleared = 0;
+		while(wait_for_input(CHLD_OUT))
+		{
+			my $buf;
+			my $bytes = sysread CHLD_OUT, $buf, $BuffereSize;
+			if(defined $bytes)
+			{
+				last if $bytes == 0;
+				if(not $cleared){ $MainQueue->enqueue('setresult("")'); $cleared = 1; }
+				$MainQueue->enqueue(['appendresult($args[0])', $buf]);
+			}
+			else
+			{
+				if(!$!{'EAGAIN'} and !$!{'EWOULDBLOCK'})
+				{
+					# TODO # read error
+					last;
+				}
+			}
+		}
+		
+		waitpid $pid, 0;
+		my $exit_status = $?;
+		$MainQueue->enqueue(['query_finished($args[0])', $exit_status]);
+	}
+}
+$runnerThread = Thread->new(\&query_runner_thread);
+$runnerThread->detach();
+
+
+for my $module (qw/Curses Curses::UI/)
+{
+	eval "require $module" or die $@;
+	$module->import();
+}
+
+$hotkey_quit = "\cC";
+$hotkey_prev_result = "\cP";
+$hotkey_wrap = KEY_F(2);
+$hotkey_edit_filterer = KEY_F(8);
+$hotkey_tail_head = "\cT";
+# TODO parse other hotkey spec
+if($hotkey_fire_spec =~ /^M-(.)$/) { $hotkey_fire = eval '"\e'.$1.'"'; }
+elsif($hotkey_fire_spec =~ /^C-(.)$/) { $hotkey_fire = eval '"\c'.$1.'"'; }
+elsif($hotkey_fire_spec =~ /^KEY_[[:alnum:]]+$/) { $hotkey_fire = eval $hotkey_fire_spec; }
+elsif($hotkey_fire_spec =~ /^F(\d+)$/) { $hotkey_fire = KEY_F($1); }
+elsif($hotkey_fire_spec eq '') { $hotkey_fire = undef; }
+else { die "Invalid KEY name: $hotkey_fire_spec\n"; }
 
 
 $CUI = new Curses::UI(
@@ -265,80 +345,6 @@ sub wait_for_input
 	1;
 }
 
-sub run_query
-{
-	my $query = shift;
-	my @command = @command_template;
-	@command = map {s/\$QUERY/$query/g; $_} @command;
-	
-	$ENV{'XIQ_QUERY'} = $query;
-	$ENV{'BUF_0_'} = 0;
-	$ENV{'BUF_1_'} = 0;
-	
-	return async {
-		$SIG{'TERM'} = undef;
-		undef *Curses::UI;
-		undef *Curses;
-		undef $CUI;
-		
-		my $pid;
-		eval {
-			$pid = open3(\*CHLD_IN, \*CHLD_OUT, \*CHLD_ERR, @command);
-			1;
-		};
-		if($@)
-		{
-			$MainQueue->enqueue(['error_result($args[0])', $@]);
-			$MainQueue->enqueue(['query_finished($args[0])', -1]);
-			return;
-		}
-		
-		$MainQueue->enqueue(['query_started($args[0])', $pid]);
-		
-		my $feedThread = async {
-			open my $input, '<&', $InputFH;
-			seek $input, 0, 0;
-			CHLD_IN->autoflush(1);
-			$SIG{'PIPE'} = 'IGNORE'; #FIXME
-			# TODO nonblocking read larger buffers
-			while(<$input>)
-			{
-				print {CHLD_IN} $_;
-			}
-			close CHLD_IN;
-			close $input;
-		};
-		$feedThread->detach;
-		close CHLD_IN;
-		
-		set_nonblock(CHLD_OUT);
-		my $cleared = 0;
-		while(wait_for_input(CHLD_OUT))
-		{
-			my $buf;
-			my $bytes = sysread CHLD_OUT, $buf, $BuffereSize;
-			if(defined $bytes)
-			{
-				last if $bytes == 0;
-				if(not $cleared){ $MainQueue->enqueue('setresult("")'); $cleared = 1; }
-				$MainQueue->enqueue(['appendresult($args[0])', $buf]);
-			}
-			else
-			{
-				if(!$!{'EAGAIN'} and !$!{'EWOULDBLOCK'})
-				{
-					# TODO # read error
-					last;
-				}
-			}
-		}
-		
-		waitpid $pid, 0;
-		my $exit_status = $?;
-		$MainQueue->enqueue(['query_finished($args[0])', $exit_status]);
-	};
-}
-
 
 sub query_started
 {
@@ -378,8 +384,9 @@ sub fire_query
 	else
 	{
 		my $query = $edt_query->{-text};
-		$queryThread = run_query($query);
-		$queryThread->detach;
+		my @command = @command_template;
+		@command = map {s/\$QUERY/$query/g; $_} @command;
+		$RunnerQueue->enqueue([$query, fileno $InputFH, @command]);
 	}
 }
 
@@ -436,7 +443,7 @@ sub redraw
 {
 	Curses::refresh();
 	$win_result->draw;
-	$win_hline->draw;
+	$win_hline->draw if defined $win_hline;
 	$win_filterer->draw if $win_filterer->{-focusable};
 	$win_query->draw;
 }
@@ -472,7 +479,7 @@ $CUI->set_binding(\&toggle_tail_head, $hotkey_tail_head);
 
 
 
-$CUI->{-read_timeout} = 0.1;
+$CUI->{-read_timeout} = 0.1;  #FIXME infinite timeout
 $border_color = $win_result->{-bfg};
 adjust_scrollbars();
 $edt_query->focus();
@@ -482,10 +489,6 @@ $edt_query->focus();
 ($InputFH, $InputFN) = tempfile("xiq-input-XXXXX", DIR => '/var/run/shm');
 unlink $InputFN;
 $inputThread = async {
-	$SIG{'TERM'} = undef;
-	undef *Curses::UI;
-	undef *Curses;
-	undef $CUI;
 	# TODO loading...
 	# TODO nonblocking read in larger buffers
 	while(<$STDIN>)
